@@ -1,21 +1,7 @@
-/**
- * Copyright Google Inc. All Rights Reserved.
- * <p/>
- * Licensed under the Apache License, Version 2.0 (the "License");
- * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- * <p/>
- * http://www.apache.org/licenses/LICENSE-2.0
- * <p/>
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
 package com.google.firebase.udacity.friendlychat;
 
 import android.content.Intent;
+import android.net.Uri;
 import android.os.Bundle;
 
 import androidx.annotation.NonNull;
@@ -35,6 +21,8 @@ import android.widget.ListView;
 import android.widget.ProgressBar;
 
 import com.firebase.ui.auth.AuthUI;
+import com.google.android.gms.tasks.OnSuccessListener;
+import com.google.android.gms.tasks.Task;
 import com.google.firebase.auth.FirebaseAuth;
 import com.google.firebase.auth.FirebaseUser;
 import com.google.firebase.database.ChildEventListener;
@@ -42,7 +30,11 @@ import com.google.firebase.database.DataSnapshot;
 import com.google.firebase.database.DatabaseError;
 import com.google.firebase.database.DatabaseReference;
 import com.google.firebase.database.FirebaseDatabase;
+import com.google.firebase.storage.FirebaseStorage;
+import com.google.firebase.storage.StorageReference;
+import com.google.firebase.storage.UploadTask;
 
+import java.net.URI;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
@@ -54,6 +46,7 @@ public class MainActivity extends AppCompatActivity {
     public static final String ANONYMOUS = "anonymous";
     public static final int DEFAULT_MSG_LENGTH_LIMIT = 1000;
     private static final int RC_SIGN_IN = 101;
+    private static final int RC_PHOTO_PICKER = 102;
 
 
     private ListView mMessageListView;
@@ -65,27 +58,29 @@ public class MainActivity extends AppCompatActivity {
 
     private String mUsername;
 
-    private DatabaseReference mDatabase;
+    private DatabaseReference mDatabaseReference;
     private ChildEventListener mChildEventListener;
     private FirebaseAuth mFirebaseAuth;
     private FirebaseAuth.AuthStateListener mAuthStateListener;
+    private StorageReference mStorageReference;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
 
-        mDatabase = FirebaseDatabase.getInstance().getReference().child("messages");
+        mDatabaseReference = FirebaseDatabase.getInstance().getReference().child("messages");
         mFirebaseAuth = FirebaseAuth.getInstance();
+        mStorageReference = FirebaseStorage.getInstance().getReference().child("chat_photos");
 
         mUsername = ANONYMOUS;
 
         // Initialize references to views
-        mProgressBar = (ProgressBar) findViewById(R.id.progressBar);
-        mMessageListView = (ListView) findViewById(R.id.messageListView);
-        mPhotoPickerButton = (ImageButton) findViewById(R.id.photoPickerButton);
-        mMessageEditText = (EditText) findViewById(R.id.messageEditText);
-        mSendButton = (Button) findViewById(R.id.sendButton);
+        mProgressBar = findViewById(R.id.progressBar);
+        mMessageListView = findViewById(R.id.messageListView);
+        mPhotoPickerButton = findViewById(R.id.photoPickerButton);
+        mMessageEditText = findViewById(R.id.messageEditText);
+        mSendButton = findViewById(R.id.sendButton);
 
         // Initialize message ListView and its adapter
         List<FriendlyMessage> friendlyMessages = new ArrayList<>();
@@ -123,7 +118,10 @@ public class MainActivity extends AppCompatActivity {
         mPhotoPickerButton.setOnClickListener(new View.OnClickListener() {
             @Override
             public void onClick(View view) {
-                // TODO: Fire an intent to show an image picker
+                Intent intent = new Intent(Intent.ACTION_GET_CONTENT);
+                intent.setType("image/*");
+                //intent.putExtra(Intent.EXTRA_LOCAL_ONLY, true);
+                startActivityForResult(Intent.createChooser(intent, "Complete Action Using: "), RC_PHOTO_PICKER);
             }
         });
 
@@ -193,8 +191,12 @@ public class MainActivity extends AppCompatActivity {
 
                 FirebaseUser user = mFirebaseAuth.getCurrentUser();
                 if (user != null) {
-                    // already signed in
-                    onSignIn(user.getDisplayName());
+                    // already signed in .. Although the user is not null, but his name may be null if he signed in as Anonoymous
+                    if (user.getDisplayName() != null){
+                        onSignIn(user.getDisplayName());
+                    } else {
+                        onSignIn(ANONYMOUS);
+                    }
 
                 } else {
                     // not signed in
@@ -206,9 +208,9 @@ public class MainActivity extends AppCompatActivity {
         };
     }
 
-    private void sendMessage(String text, String name, String photoUrl){
-        FriendlyMessage message = new FriendlyMessage(text, name, photoUrl);
-        mDatabase.push().setValue(message);
+    private void sendMessage(String text, String name, String imageUrl){
+        FriendlyMessage message = new FriendlyMessage(text, name, imageUrl);
+        mDatabaseReference.push().setValue(message);
     }
 
     @Override
@@ -223,7 +225,7 @@ public class MainActivity extends AppCompatActivity {
         mFirebaseAuth.removeAuthStateListener(mAuthStateListener);
         //Because every time the app pauses and resumes again, mAuthStateListener will detach and attaches again,
         // which will put mChildEventListener twice if we didn't detach it here too, and the same for the messages in the adapter
-        mDatabase.removeEventListener(mChildEventListener);
+        mDatabaseReference.removeEventListener(mChildEventListener);
         mMessageAdapter.clear();
     }
 
@@ -232,21 +234,40 @@ public class MainActivity extends AppCompatActivity {
         super.onActivityResult(requestCode, resultCode, data);
 
         if (requestCode == RC_SIGN_IN){
-            // All things are already taken care of in the authstatelistener
             if (resultCode == RESULT_OK){
-
+                // All things are already taken care of in the authstatelistener
             } else {
                 // All things are already taken care of in the authstatelistener except that in order tp prevent an infinite loop
                 finish();
             }
-
+        } else if (requestCode == RC_PHOTO_PICKER && resultCode == RESULT_OK) {
+            if (data != null){
+                //get the photo Uri from the returned intent
+                Uri imageUri = data.getData();
+                //Generating the name under which the photo will be uploaded ... "child"
+                StorageReference imageReference = mStorageReference.child(imageUri.getLastPathSegment());
+                //uploading
+                UploadTask imageUploadTask = imageReference.putFile(imageUri);
+                imageUploadTask.addOnSuccessListener(new OnSuccessListener<UploadTask.TaskSnapshot>() {
+                    @Override
+                    public void onSuccess(UploadTask.TaskSnapshot taskSnapshot) {
+                            Task<Uri> result = taskSnapshot.getStorage().getDownloadUrl();
+                            result.addOnSuccessListener(new OnSuccessListener<Uri>() {
+                                @Override
+                                public void onSuccess(Uri uri) {
+                                    String imageUrl = uri.toString();
+                                    sendMessage(null, mUsername, imageUrl);
+                                }
+                            });
+                    }});
+            }
         }
     }
 
     private void onSignOut(){
         mUsername = ANONYMOUS;
         mMessageAdapter.clear();
-        mDatabase.removeEventListener(mChildEventListener);
+        mDatabaseReference.removeEventListener(mChildEventListener);
 
         startActivityForResult(
                 AuthUI.getInstance()
@@ -261,11 +282,8 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void onSignIn(String userName){
-        if (userName.isEmpty()){
-            userName = ANONYMOUS;
-        }
         mUsername = userName;
-        mDatabase.addChildEventListener(mChildEventListener);
+        mDatabaseReference.addChildEventListener(mChildEventListener);
 
     }
 }
